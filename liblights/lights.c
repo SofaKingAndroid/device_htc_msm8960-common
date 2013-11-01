@@ -31,6 +31,9 @@
 
 #include <hardware/lights.h>
 
+#define LOGE ALOGE
+#define LOGV ALOGV
+
 static pthread_once_t g_init = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct light_state_t g_notification;
@@ -41,7 +44,6 @@ char const*const AMBER_LED_FILE = "/sys/class/leds/amber/brightness";
 char const*const GREEN_LED_FILE = "/sys/class/leds/green/brightness";
 
 char const*const BUTTON_FILE = "/sys/class/leds/button-backlight/brightness";
-char const*const BUTTON_CURRENTS_FILE = "/sys/class/leds/button-backlight/currents";
 
 char const*const AMBER_BLINK_FILE = "/sys/class/leds/amber/blink";
 char const*const GREEN_BLINK_FILE = "/sys/class/leds/green/blink";
@@ -55,15 +57,19 @@ enum {
 };
 
 enum {
-  PULSE_LENGTH_ALWAYS_ON = 1,
-  PULSE_LENGTH_NORMAL = 2,
-  PULSE_LENGTH_LONG = 3,
+  PULSE_LENGTH_VERY_SHORT = 1,
+  PULSE_LENGTH_SHORT = 2,
+  PULSE_LENGTH_NORMAL= 3,
+  PULSE_LENGTH_LONG= 4,
+  PULSE_LENGTH_ALWAYS_ON = 5,
 };
 
 enum {
-  BLINK_MODE_OFF = 0,
-  BLINK_MODE_NORMAL = 1,
-  BLINK_MODE_LONG = 4,
+  BLINK_MODE_OFF,
+  BLINK_MODE_VERY_SHORT,
+  BLINK_MODE_SHORT,
+  BLINK_MODE_NORMAL,
+  BLINK_MODE_LONG,
 };
 
 static int write_int(const char* path, int value) {
@@ -75,13 +81,13 @@ static int write_int(const char* path, int value) {
   fd = open(path, O_RDWR);
   if (fd < 0) {
     if (already_warned == 0) {
-      ALOGE("write_int failed to open %s\n", path);
+      LOGE("write_int failed to open %s\n", path);
       already_warned = 1;
     }
     return -errno;
   }
 
-  bytes = snprintf(buffer, sizeof(buffer), "%d\n", value);
+  bytes = snprintf(buffer, sizeof(buffer), "%d\n",value);
   written = write(fd, buffer, bytes);
   close(fd);
 
@@ -104,17 +110,13 @@ static void set_speaker_light_locked(struct light_device_t *dev,
 
   if ((colorRGB >> 8) & 0xFF) color = LED_GREEN;
   if ((colorRGB >> 16) & 0xFF) color = LED_AMBER;
-  if (((colorRGB >> 8) & 0xFF) > ((colorRGB >> 16) & 0xFF)) color = LED_GREEN;
-
-  if (state->flashMode == LIGHT_FLASH_TIMED)
-  {
-    // make sure to blink by default regardless of timing
-    blinkMode = BLINK_MODE_NORMAL;
-  }
 
   switch (state->flashOnMS) {
-    case PULSE_LENGTH_ALWAYS_ON:
-      state->flashMode = LIGHT_FLASH_NONE;
+    case PULSE_LENGTH_VERY_SHORT:
+      blinkMode = BLINK_MODE_VERY_SHORT;
+      break;
+    case PULSE_LENGTH_SHORT:
+      blinkMode = BLINK_MODE_SHORT;
       break;
     case PULSE_LENGTH_NORMAL:
       blinkMode = BLINK_MODE_NORMAL;
@@ -122,45 +124,44 @@ static void set_speaker_light_locked(struct light_device_t *dev,
     case PULSE_LENGTH_LONG:
       blinkMode = BLINK_MODE_LONG;
       break;
+    case PULSE_LENGTH_ALWAYS_ON:
+      state->flashMode = LIGHT_FLASH_NONE;
+      break;
   }
 
   switch (state->flashMode) {
     case LIGHT_FLASH_TIMED:
       switch (color) {
         case LED_AMBER:
-          write_int(AMBER_LED_FILE, 1);
+          write_int(AMBER_BLINK_FILE, 1);
           write_int(GREEN_LED_FILE, 0);
-          write_int(AMBER_BLINK_FILE, blinkMode);
-          write_int(GREEN_BLINK_FILE, 0);
           break;
         case LED_GREEN:
+          write_int(GREEN_BLINK_FILE, 1);
           write_int(AMBER_LED_FILE, 0);
-          write_int(GREEN_LED_FILE, 1);
-          write_int(AMBER_BLINK_FILE, 0);
-          write_int(GREEN_BLINK_FILE, blinkMode);
           break;
         case LED_BLANK:
           write_int(AMBER_BLINK_FILE, 0);
           write_int(GREEN_BLINK_FILE, 0);
+          write_int(AMBER_LED_FILE, 0);
+          write_int(GREEN_LED_FILE, 0);
           break;
         default:
-          ALOGE("set_led_state colorRGB=%08X, unknown color\n", colorRGB);
+          LOGE("set_led_state colorRGB=%08X, unknown color\n", colorRGB);
           break;
       }
       break;
     case LIGHT_FLASH_NONE:
+      write_int(AMBER_BLINK_FILE, 0);
+      write_int(GREEN_BLINK_FILE, 0);
       switch (color) {
         case LED_AMBER:
           write_int(AMBER_LED_FILE, 1);
           write_int(GREEN_LED_FILE, 0);
-          write_int(AMBER_BLINK_FILE, 0);
-          write_int(GREEN_BLINK_FILE, 0);
           break;
         case LED_GREEN:
           write_int(AMBER_LED_FILE, 0);
           write_int(GREEN_LED_FILE, 1);
-          write_int(AMBER_BLINK_FILE, 0);
-          write_int(GREEN_BLINK_FILE, 0);
           break;
         case LED_BLANK:
           write_int(AMBER_LED_FILE, 0);
@@ -169,8 +170,8 @@ static void set_speaker_light_locked(struct light_device_t *dev,
       }
       break;
     default:
-      ALOGE("set_led_state colorRGB=%08X, unknown mode %d\n",
-            colorRGB, state->flashMode);
+      LOGE("set_led_state colorRGB=%08X, unknown mode %d\n",
+           colorRGB, state->flashMode);
   }
 }
 
@@ -196,7 +197,7 @@ static void set_speaker_light_locked_dual(struct light_device_t *dev,
       write_int (GREEN_BLINK_FILE, 4);
       break;
     default:
-      ALOGE("set_led_state (dual) unexpected color: bcolorRGB=%08x\n", bcolorRGB);
+      LOGE("set_led_state (dual) unexpected color: bcolorRGB=%08x\n", bcolorRGB);
   }
 }
 
@@ -211,6 +212,17 @@ static void handle_speaker_battery_locked(struct light_device_t *dev) {
   }
 }
 
+static int set_light_buttons(struct light_device_t* dev,
+                             struct light_state_t const* state) {
+  int err = 0;
+  int on = is_lit(state);
+  pthread_mutex_lock(&g_lock);
+  err = write_int(BUTTON_FILE, on ? 255 : 0);
+  pthread_mutex_unlock(&g_lock);
+
+  return 0;
+}
+
 static int rgb_to_brightness(struct light_state_t const* state)
 {
   int color = state->color & 0x00ffffff;
@@ -218,23 +230,11 @@ static int rgb_to_brightness(struct light_state_t const* state)
           (29 * (color & 0x00ff))) >> 8;
 }
 
-static int set_light_buttons(struct light_device_t* dev,
-                             struct light_state_t const* state) {
-  int err = 0;
-  int brightness = rgb_to_brightness(state);
-  pthread_mutex_lock(&g_lock);
-  err = write_int(BUTTON_FILE, brightness);
-  err = write_int(BUTTON_CURRENTS_FILE, (brightness / 25));
-  pthread_mutex_unlock(&g_lock);
-
-  return 0;
-}
-
 static int set_light_backlight(struct light_device_t* dev,
                                struct light_state_t const* state) {
   int err = 0;
   int brightness = rgb_to_brightness(state);
-  ALOGV("%s brightness=%d color=0x%08x", __func__,brightness, state->color);
+  LOGV("%s brightness=%d color=0x%08x", __func__,brightness, state->color);
   pthread_mutex_lock(&g_lock);
   g_backlight = brightness;
   err = write_int(LCD_BACKLIGHT_FILE, brightness);
@@ -313,7 +313,8 @@ static struct hw_module_methods_t lights_module_methods = {
   .open = open_lights,
 };
 
-struct hw_module_t HAL_MODULE_INFO_SYM = {
+struct hw_module_t HAL_MODULE_INFO_SYM = 
+{
   .tag = HARDWARE_MODULE_TAG,
   .version_major = 1,
   .version_minor = 0,
